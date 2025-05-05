@@ -5,8 +5,12 @@ import re
 import subprocess
 import json
 import sys
+import uuid
 
 app = Flask(__name__)
+
+# Constants
+COOKIE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
 
 @app.route('/')
 def home_page():
@@ -40,10 +44,10 @@ def download_video():
     return download_with_ytdlp(url)
 
 def download_with_ytdlp(url):
-    """Download video using yt-dlp"""
+    """Download video using yt-dlp with cookie support"""
     try:
-        # Create temporary directory
-        temp_dir = tempfile.mkdtemp()
+        # Create temporary directory with unique name
+        temp_dir = tempfile.mkdtemp(prefix='ytdlp_')
         output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
         
         # Find yt-dlp executable path
@@ -52,48 +56,86 @@ def download_with_ytdlp(url):
         if not ytdlp_path:
             return jsonify({"error": "yt-dlp is not found. Please install it first."}), 500
             
-        # Get video info first
-        info_cmd = [ytdlp_path, '--dump-json', url]
-        result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
-        video_info = json.loads(result.stdout)
-        
-        # Download the video
-        download_cmd = [ytdlp_path, '-o', output_template, url]
-        subprocess.run(download_cmd, capture_output=True, check=True)
-        
-        # Find the downloaded file
-        video_path = None
-        for file in os.listdir(temp_dir):
-            if file.endswith(('.mp4', '.mov', '.webm', '.mkv')):
-                video_path = os.path.join(temp_dir, file)
-                break
-        
-        if not video_path:
-            return jsonify({"error": "Failed to download video with yt-dlp"}), 500
-        
-        # Get video size
-        video_size = os.path.getsize(video_path)
-        
-        # Determine the platform (Instagram or YouTube)
+        # Determine platform and set up cookie parameters
+        cookie_params = []
         platform = "Instagram" if "instagram" in url.lower() else "YouTube"
         
-        return jsonify({
-            "success": True,
-            "video_info": {
-                "filename": os.path.basename(video_path),
-                "size_bytes": video_size,
-                "size_mb": round(video_size / (1024 * 1024), 2),
-                "local_path": video_path,
-                "caption": video_info.get('description', ''),
-                "owner": video_info.get('uploader', ''),
-                "platform": platform,
-                "title": video_info.get('title', '')
-            }
-        })
+        # Ensure cookie directory exists
+        os.makedirs(COOKIE_DIR, exist_ok=True)
+        
+        # Set up cookies based on platform
+        if platform == "YouTube":
+            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        else:  # Instagram
+            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        
+        # Add extra parameters to help avoid bot detection
+        extra_params = [
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--no-check-certificates',
+            '--extractor-retries', '3'
+        ]
+        
+        try:
+            # Get video info first
+            info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
+            result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
+            video_info = json.loads(result.stdout)
             
-    except subprocess.CalledProcessError as e:
-        error_message = str(e.stderr) if hasattr(e, 'stderr') else str(e)
-        return jsonify({"error": f"yt-dlp error: {error_message}"}), 500
+            # Download the video
+            download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
+            subprocess.run(download_cmd, capture_output=True, check=True)
+            
+            # Find the downloaded file
+            video_path = None
+            for file in os.listdir(temp_dir):
+                if file.endswith(('.mp4', '.mov', '.webm', '.mkv')):
+                    video_path = os.path.join(temp_dir, file)
+                    break
+            
+            if not video_path:
+                return jsonify({"error": "Failed to download video with yt-dlp"}), 500
+            
+            # Get video size
+            video_size = os.path.getsize(video_path)
+            
+            return jsonify({
+                "success": True,
+                "video_info": {
+                    "filename": os.path.basename(video_path),
+                    "size_bytes": video_size,
+                    "size_mb": round(video_size / (1024 * 1024), 2),
+                    "local_path": video_path,
+                    "caption": video_info.get('description', ''),
+                    "owner": video_info.get('uploader', ''),
+                    "platform": platform,
+                    "title": video_info.get('title', '')
+                }
+            })
+                
+        except subprocess.CalledProcessError as e:
+            error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+            
+            # Provide more specific and helpful error messages
+            if "Sign in to confirm you're not a bot" in error_output:
+                return jsonify({
+                    "error": "YouTube requires authentication to verify you're not a bot",
+                    "solution": "Upload YouTube cookies from a logged-in browser session",
+                    "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
+                }), 403
+            elif "login required" in error_output or "Requested content is not available" in error_output:
+                return jsonify({
+                    "error": "Instagram login required",
+                    "solution": "Upload Instagram cookies from a logged-in browser session",
+                    "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+                }), 403
+            else:
+                return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
     
     except Exception as e:
         return jsonify({"error": f"Error using yt-dlp: {str(e)}"}), 500
@@ -117,14 +159,33 @@ def get_info():
         
         if not ytdlp_path:
             return jsonify({"error": "yt-dlp is not found. Please install it first."}), 500
+        
+        # Determine platform and set up cookie parameters
+        cookie_params = []
+        platform = "Instagram" if "instagram" in url.lower() else "YouTube"
+        
+        # Set up cookies based on platform
+        if platform == "YouTube":
+            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        else:  # Instagram
+            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        
+        # Add extra parameters to help avoid bot detection
+        extra_params = [
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--no-check-certificates',
+            '--extractor-retries', '3'
+        ]
             
         # Get video info
-        info_cmd = [ytdlp_path, '--dump-json', url]
+        info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
         result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
         video_info = json.loads(result.stdout)
-        
-        # Determine platform
-        platform = "Instagram" if "instagram" in url.lower() else "YouTube"
         
         return jsonify({
             "success": True,
@@ -141,11 +202,56 @@ def get_info():
         })
     
     except subprocess.CalledProcessError as e:
-        error_message = str(e.stderr) if hasattr(e, 'stderr') else str(e)
-        return jsonify({"error": f"yt-dlp error: {error_message}"}), 500
+        error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+        
+        # Provide more specific and helpful error messages
+        if "Sign in to confirm you're not a bot" in error_output:
+            return jsonify({
+                "error": "YouTube requires authentication to verify you're not a bot",
+                "solution": "Upload YouTube cookies from a logged-in browser session",
+                "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
+            }), 403
+        elif "login required" in error_output or "Requested content is not available" in error_output:
+            return jsonify({
+                "error": "Instagram login required",
+                "solution": "Upload Instagram cookies from a logged-in browser session",
+                "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+            }), 403
+        else:
+            return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
     
     except Exception as e:
         return jsonify({"error": f"Error using yt-dlp: {str(e)}"}), 500
+
+@app.route('/api/upload-cookies', methods=['POST'])
+def upload_cookies():
+    """Endpoint to upload cookies file"""
+    if 'cookie_file' not in request.files:
+        return jsonify({"error": "No cookie file provided"}), 400
+        
+    file = request.files['cookie_file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+        
+    platform = request.form.get('platform', '').lower()
+    if platform not in ['youtube', 'instagram']:
+        return jsonify({"error": "Invalid platform. Must be 'youtube' or 'instagram'"}), 400
+    
+    try:
+        # Ensure cookie directory exists
+        os.makedirs(COOKIE_DIR, exist_ok=True)
+        
+        # Save the file
+        filename = f"{platform}_cookies.txt"
+        file_path = os.path.join(COOKIE_DIR, filename)
+        file.save(file_path)
+        
+        return jsonify({
+            "success": True,
+            "message": f"Cookies for {platform} uploaded successfully"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to save cookie file: {str(e)}"}), 500
 
 @app.route('/api/test-ytdlp', methods=['GET'])
 def test_ytdlp():
@@ -165,11 +271,19 @@ def test_ytdlp():
         result = subprocess.run(version_cmd, capture_output=True, text=True, check=True)
         version = result.stdout.strip()
         
+        # Check if cookie files exist
+        youtube_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
+        instagram_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+        
         return jsonify({
             "success": True,
             "yt_dlp_version": version,
             "yt_dlp_path": ytdlp_path,
-            "python_version": sys.version
+            "python_version": sys.version,
+            "cookies": {
+                "youtube": youtube_cookies_exist,
+                "instagram": instagram_cookies_exist
+            }
         })
     
     except Exception as e:
@@ -221,6 +335,9 @@ def find_ytdlp_path():
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist
     os.makedirs('templates', exist_ok=True)
+    
+    # Create cookies directory if it doesn't exist
+    os.makedirs(COOKIE_DIR, exist_ok=True)
     
     # Check if yt-dlp is installed
     ytdlp_path = find_ytdlp_path()
