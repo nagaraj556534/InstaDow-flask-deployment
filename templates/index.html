@@ -19,6 +19,11 @@
             text-align: center;
             margin-bottom: 30px;
         }
+        h2 {
+            color: #333;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
         .container {
             background: white;
             border-radius: 8px;
@@ -34,7 +39,9 @@
             margin-bottom: 8px;
             font-weight: 600;
         }
-        input[type="text"] {
+        input[type="text"],
+        input[type="file"],
+        select {
             width: 100%;
             padding: 12px;
             border: 1px solid #ddd;
@@ -126,40 +133,136 @@
         .instagram {
             background: #C13584;
         }
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ddd;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: 600;
+            border-bottom: 3px solid transparent;
+        }
+        .tab.active {
+            border-bottom: 3px solid #FF0000;
+            color: #FF0000;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .auth-status {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 4px;
+        }
+        .auth-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            color: white;
+        }
+        .auth-badge.authenticated {
+            background-color: #28a745;
+        }
+        .auth-badge.not-authenticated {
+            background-color: #dc3545;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>YouTube & Instagram Video Downloader</h1>
         
-        <div class="form-group">
-            <label for="video-url">Enter Video URL:</label>
-            <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=... or https://www.instagram.com/p/..." autocomplete="off">
+        <div class="tabs">
+            <div class="tab active" data-tab="downloader">Downloader</div>
+            <div class="tab" data-tab="cookies">Authentication</div>
         </div>
         
-        <div class="note">
-            <strong>Supported Platforms:</strong>
-            <ul>
-                <li>YouTube videos and shorts</li>
-                <li>Instagram posts, reels, and stories</li>
-            </ul>
-        </div>
-        
-        <button id="get-info-btn">Get Information</button>
-        <p class="error" id="error-message"></p>
-        
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>Processing your request...</p>
-        </div>
-        
-        <div class="result" id="result">
-            <h3>Video Information</h3>
-            <div id="video-info"></div>
-            
-            <div class="video-info" id="download-container">
-                <button id="download-btn" style="margin-top: 20px;">Download Video</button>
+        <div class="tab-content active" id="downloader-tab">
+            <div class="auth-status">
+                <div>
+                    <span>YouTube: </span>
+                    <span id="youtube-auth-status" class="auth-badge not-authenticated">Not Authenticated</span>
+                </div>
+                <div>
+                    <span>Instagram: </span>
+                    <span id="instagram-auth-status" class="auth-badge not-authenticated">Not Authenticated</span>
+                </div>
             </div>
+            
+            <div class="form-group">
+                <label for="video-url">Enter Video URL:</label>
+                <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=... or https://www.instagram.com/p/..." autocomplete="off">
+            </div>
+            
+            <div class="note">
+                <strong>Supported Platforms:</strong>
+                <ul>
+                    <li>YouTube videos and shorts</li>
+                    <li>Instagram posts, reels, and stories</li>
+                </ul>
+                <p><strong>Note:</strong> Some videos require authentication. Please use the Authentication tab to upload cookies if you encounter errors.</p>
+            </div>
+            
+            <button id="get-info-btn">Get Information</button>
+            <p class="error" id="error-message"></p>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>Processing your request...</p>
+            </div>
+            
+            <div class="result" id="result">
+                <h3>Video Information</h3>
+                <div id="video-info"></div>
+                
+                <div class="video-info" id="download-container">
+                    <button id="download-btn" style="margin-top: 20px;">Download Video</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="tab-content" id="cookies-tab">
+            <h2>Authentication Setup</h2>
+            <div class="note">
+                <p><strong>Why is authentication needed?</strong></p>
+                <p>YouTube and Instagram sometimes require authentication to download videos. To bypass these restrictions, you can upload cookie files exported from your browser.</p>
+                <p><strong>How to get cookies:</strong></p>
+                <ol>
+                    <li>Log in to YouTube or Instagram in your browser</li>
+                    <li>Install a cookie export extension (like "Cookie-Editor" for Chrome)</li>
+                    <li>Export cookies in Netscape/Mozilla format</li>
+                    <li>Upload the cookie file below</li>
+                </ol>
+            </div>
+            
+            <form id="cookie-form" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="platform">Platform:</label>
+                    <select id="platform" name="platform" required>
+                        <option value="youtube">YouTube</option>
+                        <option value="instagram">Instagram</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="cookie-file">Cookie File:</label>
+                    <input type="file" id="cookie-file" name="cookie_file" required>
+                </div>
+                
+                <button type="submit">Upload Cookies</button>
+            </form>
+            
+            <p id="cookie-message" class="success" style="display: none;"></p>
         </div>
     </div>
     
@@ -169,6 +272,24 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
+            // Tab switching
+            const tabs = document.querySelectorAll('.tab');
+            const tabContents = document.querySelectorAll('.tab-content');
+            
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const tabId = this.getAttribute('data-tab');
+                    
+                    // Remove active class from all tabs and contents
+                    tabs.forEach(t => t.classList.remove('active'));
+                    tabContents.forEach(c => c.classList.remove('active'));
+                    
+                    // Add active class to current tab and content
+                    this.classList.add('active');
+                    document.getElementById(`${tabId}-tab`).classList.add('active');
+                });
+            });
+            
             // Elements
             const getInfoBtn = document.getElementById('get-info-btn');
             const downloadBtn = document.getElementById('download-btn');
@@ -178,8 +299,48 @@
             const downloadContainer = document.getElementById('download-container');
             const errorMessage = document.getElementById('error-message');
             const loading = document.getElementById('loading');
+            const cookieForm = document.getElementById('cookie-form');
+            const cookieMessage = document.getElementById('cookie-message');
+            const youtubeAuthStatus = document.getElementById('youtube-auth-status');
+            const instagramAuthStatus = document.getElementById('instagram-auth-status');
             
             let videoData = null;
+            
+            // Check authentication status on page load
+            checkAuthStatus();
+            
+            function checkAuthStatus() {
+                fetch('/api/test-ytdlp')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            // Update YouTube auth status
+                            if (data.cookies && data.cookies.youtube) {
+                                youtubeAuthStatus.textContent = 'Authenticated';
+                                youtubeAuthStatus.classList.remove('not-authenticated');
+                                youtubeAuthStatus.classList.add('authenticated');
+                            } else {
+                                youtubeAuthStatus.textContent = 'Not Authenticated';
+                                youtubeAuthStatus.classList.remove('authenticated');
+                                youtubeAuthStatus.classList.add('not-authenticated');
+                            }
+                            
+                            // Update Instagram auth status
+                            if (data.cookies && data.cookies.instagram) {
+                                instagramAuthStatus.textContent = 'Authenticated';
+                                instagramAuthStatus.classList.remove('not-authenticated');
+                                instagramAuthStatus.classList.add('authenticated');
+                            } else {
+                                instagramAuthStatus.textContent = 'Not Authenticated';
+                                instagramAuthStatus.classList.remove('authenticated');
+                                instagramAuthStatus.classList.add('not-authenticated');
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error checking auth status:', error);
+                    });
+            }
 
             // Get Info button click
             getInfoBtn.addEventListener('click', async function() {
@@ -205,6 +366,10 @@
                     });
                     
                     const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Failed to get video information');
+                    }
                     
                     if (!data.success) {
                         throw new Error(data.error || 'Failed to get video information');
@@ -243,6 +408,15 @@
                     resultDiv.style.display = 'block';
                 } catch (error) {
                     errorMessage.textContent = error.message || 'An error occurred';
+                    
+                    // Check if auth error
+                    if (error.message && (error.message.includes('authentication') || error.message.includes('login required'))) {
+                        // Switch to cookies tab
+                        tabs.forEach(t => t.classList.remove('active'));
+                        tabContents.forEach(c => c.classList.remove('active'));
+                        document.querySelector('[data-tab="cookies"]').classList.add('active');
+                        document.getElementById('cookies-tab').classList.add('active');
+                    }
                 } finally {
                     loading.style.display = 'none';
                 }
@@ -272,6 +446,10 @@
                     
                     const data = await response.json();
                     
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Failed to download video');
+                    }
+                    
                     if (!data.success) {
                         throw new Error(data.error || 'Failed to download video');
                     }
@@ -295,8 +473,63 @@
                     errorMessage.textContent = error.message || 'An error occurred';
                     errorMessage.classList.add('error');
                     errorMessage.classList.remove('success');
+                    
+                    // Check if auth error
+                    if (error.message && (error.message.includes('authentication') || error.message.includes('login required'))) {
+                        // Switch to cookies tab
+                        tabs.forEach(t => t.classList.remove('active'));
+                        tabContents.forEach(c => c.classList.remove('active'));
+                        document.querySelector('[data-tab="cookies"]').classList.add('active');
+                        document.getElementById('cookies-tab').classList.add('active');
+                    }
                 } finally {
                     loading.style.display = 'none';
+                }
+            });
+            
+            // Cookie form submission
+            cookieForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const formData = new FormData(this);
+                
+                try {
+                    const response = await fetch('/api/upload-cookies', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Failed to upload cookies');
+                    }
+                    
+                    // Show success message
+                    cookieMessage.textContent = data.message || 'Cookies uploaded successfully';
+                    cookieMessage.classList.remove('error');
+                    cookieMessage.classList.add('success');
+                    cookieMessage.style.display = 'block';
+                    
+                    // Reset form
+                    cookieForm.reset();
+                    
+                    // Update auth status
+                    checkAuthStatus();
+                    
+                    // Switch back to downloader tab after a delay
+                    setTimeout(() => {
+                        tabs.forEach(t => t.classList.remove('active'));
+                        tabContents.forEach(c => c.classList.remove('active'));
+                        document.querySelector('[data-tab="downloader"]').classList.add('active');
+                        document.getElementById('downloader-tab').classList.add('active');
+                    }, 2000);
+                    
+                } catch (error) {
+                    cookieMessage.textContent = error.message || 'An error occurred';
+                    cookieMessage.classList.add('error');
+                    cookieMessage.classList.remove('success');
+                    cookieMessage.style.display = 'block';
                 }
             });
             
