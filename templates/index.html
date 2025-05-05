@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube & Instagram Video Downloader</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        h1 {
+            color: #FF0000;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #FF0000;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #CC0000;
+        }
+        .result {
+            margin-top: 30px;
+            display: none;
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 4px;
+        }
+        .video-info {
+            margin-top: 20px;
+        }
+        .error {
+            color: #FF0000;
+            font-weight: 500;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .success {
+            color: #28a745;
+            font-weight: 500;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 20px;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid #FF0000;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #888;
+            font-size: 14px;
+        }
+        .note {
+            background-color: #fff8e6;
+            border-left: 4px solid #ffc107;
+            padding: 12px;
+            margin: 15px 0;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .platform-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-left: 10px;
+            vertical-align: middle;
+            color: white;
+        }
+        .youtube {
+            background: #FF0000;
+        }
+        .instagram {
+            background: #C13584;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube & Instagram Video Downloader</h1>
+        
+        <div class="form-group">
+            <label for="video-url">Enter Video URL:</label>
+            <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=... or https://www.instagram.com/p/..." autocomplete="off">
+        </div>
+        
+        <div class="note">
+            <strong>Supported Platforms:</strong>
+            <ul>
+                <li>YouTube videos and shorts</li>
+                <li>Instagram posts, reels, and stories</li>
+            </ul>
+        </div>
+        
+        <button id="get-info-btn">Get Information</button>
+        <p class="error" id="error-message"></p>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processing your request...</p>
+        </div>
+        
+        <div class="result" id="result">
+            <h3>Video Information</h3>
+            <div id="video-info"></div>
+            
+            <div class="video-info" id="download-container">
+                <button id="download-btn" style="margin-top: 20px;">Download Video</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>Made with yt-dlp. For educational purposes only. Please respect the terms of service of all platforms.</p>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Elements
+            const getInfoBtn = document.getElementById('get-info-btn');
+            const downloadBtn = document.getElementById('download-btn');
+            const videoUrlInput = document.getElementById('video-url');
+            const resultDiv = document.getElementById('result');
+            const videoInfoDiv = document.getElementById('video-info');
+            const downloadContainer = document.getElementById('download-container');
+            const errorMessage = document.getElementById('error-message');
+            const loading = document.getElementById('loading');
+            
+            let videoData = null;
+
+            // Get Info button click
+            getInfoBtn.addEventListener('click', async function() {
+                const videoUrl = videoUrlInput.value.trim();
+                
+                if (!videoUrl) {
+                    errorMessage.textContent = 'Please enter a video URL';
+                    return;
+                }
+                
+                errorMessage.textContent = '';
+                resultDiv.style.display = 'none';
+                loading.style.display = 'block';
+                
+                try {
+                    // Get video info
+                    const response = await fetch('/api/get-info', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ url: videoUrl })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!data.success) {
+                        throw new Error(data.error || 'Failed to get video information');
+                    }
+                    
+                    videoData = data;
+                    
+                    // Display video information
+                    const info = data.video_info;
+                    const platform = info.platform || 'Unknown';
+                    const platformClass = platform.toLowerCase();
+                    const platformBadge = `<span class="platform-badge ${platformClass}">${platform}</span>`;
+                    
+                    let videoInfoHTML = `
+                        <p><strong>Title:</strong> ${info.title || 'Unknown'} ${platformBadge}</p>
+                        <p><strong>Uploader:</strong> ${info.uploader || 'Unknown'}</p>
+                        <p><strong>Views:</strong> ${formatNumber(info.view_count) || 'Unknown'}</p>
+                    `;
+                    
+                    if (info.duration) {
+                        videoInfoHTML += `<p><strong>Duration:</strong> ${formatDuration(info.duration)}</p>`;
+                    }
+                    
+                    if (info.upload_date) {
+                        videoInfoHTML += `<p><strong>Upload Date:</strong> ${formatDate(info.upload_date)}</p>`;
+                    }
+                    
+                    if (info.description) {
+                        const shortDescription = info.description.length > 200 
+                            ? info.description.substring(0, 200) + '...' 
+                            : info.description;
+                        videoInfoHTML += `<p><strong>Description:</strong> ${shortDescription}</p>`;
+                    }
+                    
+                    videoInfoDiv.innerHTML = videoInfoHTML;
+                    resultDiv.style.display = 'block';
+                } catch (error) {
+                    errorMessage.textContent = error.message || 'An error occurred';
+                } finally {
+                    loading.style.display = 'none';
+                }
+            });
+            
+            // Download button click
+            downloadBtn.addEventListener('click', async function() {
+                const videoUrl = videoUrlInput.value.trim();
+                
+                if (!videoUrl) {
+                    errorMessage.textContent = 'Please enter a video URL';
+                    return;
+                }
+                
+                errorMessage.textContent = '';
+                loading.style.display = 'block';
+                
+                try {
+                    // Download video
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ url: videoUrl })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!data.success) {
+                        throw new Error(data.error || 'Failed to download video');
+                    }
+                    
+                    // Start downloading
+                    const videoInfo = data.video_info;
+                    const a = document.createElement('a');
+                    a.href = `/download?path=${encodeURIComponent(videoInfo.local_path)}`;
+                    a.download = videoInfo.filename || 'video.mp4';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    
+                    // Show success message
+                    errorMessage.textContent = '';
+                    errorMessage.classList.remove('error');
+                    errorMessage.classList.add('success');
+                    errorMessage.textContent = 'Download started!';
+                    
+                } catch (error) {
+                    errorMessage.textContent = error.message || 'An error occurred';
+                    errorMessage.classList.add('error');
+                    errorMessage.classList.remove('success');
+                } finally {
+                    loading.style.display = 'none';
+                }
+            });
+            
+            // Helper functions
+            function formatNumber(num) {
+                if (!num) return '0';
+                return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+            }
+            
+            function formatDuration(seconds) {
+                if (!seconds) return '0:00';
+                const hrs = Math.floor(seconds / 3600);
+                const mins = Math.floor((seconds % 3600) / 60);
+                const secs = Math.floor(seconds % 60);
+                
+                if (hrs > 0) {
+                    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                } else {
+                    return `${mins}:${secs.toString().padStart(2, '0')}`;
+                }
+            }
+            
+            function formatDate(dateStr) {
+                if (!dateStr) return '';
+                // Format YYYYMMDD to YYYY-MM-DD
+                if (dateStr.length === 8) {
+                    const year = dateStr.substring(0, 4);
+                    const month = dateStr.substring(4, 6);
+                    const day = dateStr.substring(6, 8);
+                    return `${year}-${month}-${day}`;
+                }
+                return dateStr;
+            }
+        });
+    </script>
+</body>
+</html> 

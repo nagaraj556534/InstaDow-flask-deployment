@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test yt-dlp</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>yt-dlp Test</h1>
+    <button id="testButton">Test yt-dlp</button>
+    <div id="output"></div>
+
+    <script>
+        document.getElementById('testButton').addEventListener('click', async function() {
+            const outputDiv = document.getElementById('output');
+            outputDiv.innerHTML = "<p>Testing yt-dlp...</p>";
+            
+            try {
+                const response = await fetch('/test-ytdlp');
+                const data = await response.json();
+                
+                outputDiv.innerHTML = "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
+            } catch (error) {
+                outputDiv.innerHTML = "<p style='color:red'>Error: " + error.message + "</p>";
+            }
+        });
+    </script>
+</body>
+</html> 
