@@ -119,7 +119,8 @@ def download_with_ytdlp(url):
             })
                 
         except subprocess.CalledProcessError as e:
-            error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+            # Fix: e.stderr is already a string when text=True is used in subprocess.run
+            error_output = e.stderr if e.stderr else str(e)
             
             # Provide more specific and helpful error messages
             if "Sign in to confirm you're not a bot" in error_output:
@@ -202,7 +203,8 @@ def get_info():
         })
     
     except subprocess.CalledProcessError as e:
-        error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+        # Fix: e.stderr is already a string when text=True is used in subprocess.run
+        error_output = e.stderr if e.stderr else str(e)
         
         # Provide more specific and helpful error messages
         if "Sign in to confirm you're not a bot" in error_output:
