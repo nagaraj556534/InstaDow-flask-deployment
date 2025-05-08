@@ -141,6 +141,14 @@ def download_with_ytdlp(url):
                         '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 12_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 105.0.0.11.118'
                     ]
                     
+                    # Check if we have credentials available
+                    credentials = get_credentials('instagram')
+                    if credentials and credentials.get('username') and credentials.get('password'):
+                        alt_params.extend([
+                            '--username', credentials['username'],
+                            '--password', credentials['password']
+                        ])
+                    
                     # Download with alternative parameters
                     alt_cmd = [ytdlp_path, '-o', output_template] + alt_params + [url]
                     subprocess.run(alt_cmd, capture_output=True, text=True, check=True)
@@ -171,10 +179,12 @@ def download_with_ytdlp(url):
                     })
                     
                 except Exception as alt_err:
+                    credentials_exist = get_credentials('instagram') is not None
                     return jsonify({
                         "error": "Instagram login required and alternative method failed",
                         "details": str(alt_err),
-                        "solution": "Try uploading Instagram cookies from a logged-in browser session"
+                        "solution": "Try uploading Instagram cookies from a logged-in browser session",
+                        "has_credentials": credentials_exist
                     }), 403
             
             # Provide more specific and helpful error messages for other cases
@@ -279,6 +289,14 @@ def get_info():
                     '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 12_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 105.0.0.11.118'
                 ]
                 
+                # Check if we have credentials available
+                credentials = get_credentials('instagram')
+                if credentials and credentials.get('username') and credentials.get('password'):
+                    alt_params.extend([
+                        '--username', credentials['username'],
+                        '--password', credentials['password']
+                    ])
+                
                 # Get info with alternative parameters
                 alt_cmd = [ytdlp_path, '--dump-json'] + alt_params + [url]
                 result = subprocess.run(alt_cmd, capture_output=True, text=True, check=True)
@@ -299,10 +317,12 @@ def get_info():
                 })
                 
             except Exception as alt_err:
+                credentials_exist = get_credentials('instagram') is not None
                 return jsonify({
                     "error": "Instagram login required and alternative method failed",
                     "details": str(alt_err),
-                    "solution": "Try uploading Instagram cookies from a logged-in browser session"
+                    "solution": "Try uploading Instagram cookies from a logged-in browser session",
+                    "has_credentials": credentials_exist
                 }), 403
         
         # Provide more specific and helpful error messages for other cases
@@ -354,6 +374,90 @@ def upload_cookies():
     except Exception as e:
         return jsonify({"error": f"Failed to save cookie file: {str(e)}"}), 500
 
+@app.route('/api/set-credentials', methods=['POST'])
+def set_credentials():
+    """Endpoint to save Instagram or YouTube credentials"""
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({"error": "No credentials data provided"}), 400
+            
+        platform = data.get('platform', '').lower()
+        if platform not in ['youtube', 'instagram']:
+            return jsonify({"error": "Invalid platform. Must be 'youtube' or 'instagram'"}), 400
+            
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({"error": "Username and password are required"}), 400
+            
+        # Ensure cookie directory exists
+        os.makedirs(COOKIE_DIR, exist_ok=True)
+        
+        # Create credential file
+        cred_file = os.path.join(COOKIE_DIR, f"{platform}_credentials.json")
+        
+        # Save credentials as JSON
+        with open(cred_file, 'w') as f:
+            json.dump({
+                "username": username,
+                "password": password,
+                "saved_at": str(uuid.uuid4())  # Add a unique ID as timestamp
+            }, f)
+            
+        # Try to generate cookies file using yt-dlp with credentials
+        ytdlp_path = find_ytdlp_path()
+        
+        if ytdlp_path:
+            # Create cookies file from credentials
+            cookie_file = os.path.join(COOKIE_DIR, f"{platform}_cookies.txt")
+            
+            if platform == "instagram":
+                test_url = "https://www.instagram.com/instagram/"
+            else:  # youtube
+                test_url = "https://www.youtube.com/feed/trending"
+                
+            try:
+                # Use yt-dlp to authenticate and save cookies
+                auth_cmd = [
+                    ytdlp_path,
+                    '--username', username,
+                    '--password', password,
+                    '--cookies', cookie_file,
+                    '--mark-watched',
+                    '--no-check-certificate',
+                    '--ignore-errors',
+                    '--no-warnings',
+                    '--no-download',
+                    '--quiet',
+                    test_url
+                ]
+                
+                subprocess.run(auth_cmd, capture_output=True, text=True, timeout=30)
+                
+                # Check if cookies file was created
+                if os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
+                    return jsonify({
+                        "success": True,
+                        "message": f"{platform.capitalize()} credentials saved successfully and cookies generated",
+                        "has_cookies": True
+                    })
+            except Exception as e:
+                # Log error but continue - we'll return success for credentials even if cookie generation fails
+                print(f"Error generating cookies: {str(e)}")
+        
+        # Return success for saving credentials even if cookie generation fails
+        return jsonify({
+            "success": True,
+            "message": f"{platform.capitalize()} credentials saved successfully",
+            "has_cookies": False
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to save credentials: {str(e)}"}), 500
+
 @app.route('/api/test-ytdlp', methods=['GET'])
 def test_ytdlp():
     """Endpoint to test if yt-dlp is working."""
@@ -376,6 +480,10 @@ def test_ytdlp():
         youtube_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
         instagram_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
         
+        # Check if credential files exist
+        youtube_credentials_exist = get_credentials('youtube') is not None
+        instagram_credentials_exist = get_credentials('instagram') is not None
+        
         return jsonify({
             "success": True,
             "yt_dlp_version": version,
@@ -384,6 +492,10 @@ def test_ytdlp():
             "cookies": {
                 "youtube": youtube_cookies_exist,
                 "instagram": instagram_cookies_exist
+            },
+            "credentials": {
+                "youtube": youtube_credentials_exist,
+                "instagram": instagram_credentials_exist
             }
         })
     
@@ -432,6 +544,19 @@ def find_ytdlp_path():
                 continue
     
     return ytdlp_path
+
+def get_credentials(platform):
+    """Get saved credentials for a platform if they exist"""
+    cred_file = os.path.join(COOKIE_DIR, f"{platform.lower()}_credentials.json")
+    
+    if os.path.exists(cred_file):
+        try:
+            with open(cred_file, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return None
+    
+    return None
 
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist
