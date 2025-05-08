@@ -378,20 +378,61 @@ def upload_cookies():
 def set_credentials():
     """Endpoint to save Instagram or YouTube credentials"""
     try:
-        data = request.json
+        # Try to get data from JSON first
+        if request.is_json:
+            data = request.json
+        else:
+            # Try to get data from form
+            data = {
+                'platform': request.form.get('platform'),
+                'username': request.form.get('username'),
+                'password': request.form.get('password')
+            }
+            
+            # If no form data, try to parse raw data as JSON
+            if not any(data.values()):
+                try:
+                    data = json.loads(request.get_data())
+                except:
+                    return jsonify({
+                        "error": "Request must be JSON or form data",
+                        "content_type": request.content_type,
+                        "received_data": str(request.get_data())
+                    }), 400
         
         if not data:
-            return jsonify({"error": "No credentials data provided"}), 400
+            return jsonify({
+                "error": "No credentials data provided",
+                "received_data": str(request.get_data())
+            }), 400
             
         platform = data.get('platform', '').lower()
+        if not platform:
+            return jsonify({
+                "error": "Platform is required",
+                "received_data": data
+            }), 400
+            
         if platform not in ['youtube', 'instagram']:
-            return jsonify({"error": "Invalid platform. Must be 'youtube' or 'instagram'"}), 400
+            return jsonify({
+                "error": "Invalid platform. Must be 'youtube' or 'instagram'",
+                "received_platform": platform
+            }), 400
             
         username = data.get('username')
         password = data.get('password')
         
-        if not username or not password:
-            return jsonify({"error": "Username and password are required"}), 400
+        if not username:
+            return jsonify({
+                "error": "Username is required",
+                "received_data": {k: v for k, v in data.items() if k != 'password'}
+            }), 400
+            
+        if not password:
+            return jsonify({
+                "error": "Password is required",
+                "received_data": {k: v for k, v in data.items() if k != 'password'}
+            }), 400
             
         # Ensure cookie directory exists
         os.makedirs(COOKIE_DIR, exist_ok=True)
@@ -456,7 +497,11 @@ def set_credentials():
         })
         
     except Exception as e:
-        return jsonify({"error": f"Failed to save credentials: {str(e)}"}), 500
+        return jsonify({
+            "error": f"Failed to save credentials: {str(e)}",
+            "request_data": str(request.get_data()),
+            "content_type": request.content_type
+        }), 500
 
 @app.route('/api/test-ytdlp', methods=['GET'])
 def test_ytdlp():
