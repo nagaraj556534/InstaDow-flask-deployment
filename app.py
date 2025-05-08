@@ -89,7 +89,7 @@ def download_with_ytdlp(url):
             
             # Download the video
             download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
-            subprocess.run(download_cmd, capture_output=True, check=True)
+            subprocess.run(download_cmd, capture_output=True, text=True, check=True)
             
             # Find the downloaded file
             video_path = None
@@ -119,7 +119,7 @@ def download_with_ytdlp(url):
             })
                 
         except subprocess.CalledProcessError as e:
-            error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+            error_output = e.stderr if e.stderr else str(e)
             
             # Provide more specific and helpful error messages
             if "Sign in to confirm you're not a bot" in error_output:
@@ -202,7 +202,7 @@ def get_info():
         })
     
     except subprocess.CalledProcessError as e:
-        error_output = e.stderr.decode('utf-8') if e.stderr else str(e)
+        error_output = e.stderr if e.stderr else str(e)
         
         # Provide more specific and helpful error messages
         if "Sign in to confirm you're not a bot" in error_output:
