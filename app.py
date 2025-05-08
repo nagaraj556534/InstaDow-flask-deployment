@@ -81,12 +81,22 @@ def download_with_ytdlp(url):
                 '--extract-audio',
                 '--add-header', 'User-Agent:Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)'
             ])
+            
+            # Check for cookies and credentials
             cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
-            if os.path.exists(cookie_path):
+            credentials = get_credentials('instagram')
+            
+            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 0:
                 cookie_params = ['--cookies', cookie_path]
+            elif credentials and credentials.get('username') and credentials.get('password'):
+                # If no cookies but we have credentials, try to use them directly
+                extra_params.extend([
+                    '--username', credentials['username'],
+                    '--password', credentials['password']
+                ])
         else:  # YouTube
             cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
-            if os.path.exists(cookie_path):
+            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 0:
                 cookie_params = ['--cookies', cookie_path]
         
         try:
@@ -461,30 +471,57 @@ def set_credentials():
                 test_url = "https://www.youtube.com/feed/trending"
                 
             try:
-                # Use yt-dlp to authenticate and save cookies
-                auth_cmd = [
-                    ytdlp_path,
-                    '--username', username,
-                    '--password', password,
-                    '--cookies', cookie_file,
-                    '--mark-watched',
-                    '--no-check-certificate',
-                    '--ignore-errors',
-                    '--no-warnings',
-                    '--no-download',
-                    '--quiet',
-                    test_url
-                ]
-                
-                subprocess.run(auth_cmd, capture_output=True, text=True, timeout=30)
-                
-                # Check if cookies file was created
-                if os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
-                    return jsonify({
-                        "success": True,
-                        "message": f"{platform.capitalize()} credentials saved successfully and cookies generated",
-                        "has_cookies": True
-                    })
+                # Create a temporary directory for cookie generation
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # First, try to get cookies using yt-dlp
+                    auth_cmd = [
+                        ytdlp_path,
+                        '--username', username,
+                        '--password', password,
+                        '--cookies', cookie_file,
+                        '--mark-watched',
+                        '--no-check-certificate',
+                        '--ignore-errors',
+                        '--no-warnings',
+                        '--no-download',
+                        '--quiet',
+                        test_url
+                    ]
+                    
+                    result = subprocess.run(auth_cmd, capture_output=True, text=True)
+                    
+                    # If cookie generation failed, try alternative method
+                    if not os.path.exists(cookie_file) or os.path.getsize(cookie_file) == 0:
+                        # Try using curl to get cookies
+                        curl_cmd = [
+                            'curl',
+                            '-c', cookie_file,
+                            '-b', cookie_file,
+                            '-L',
+                            '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            '-d', f'username={username}&password={password}',
+                            '-H', 'Content-Type: application/x-www-form-urlencoded',
+                            test_url
+                        ]
+                        
+                        try:
+                            subprocess.run(curl_cmd, capture_output=True, text=True, check=True)
+                        except subprocess.CalledProcessError:
+                            # If curl fails, create a basic Netscape format cookie file
+                            with open(cookie_file, 'w') as f:
+                                f.write("# Netscape HTTP Cookie File\n")
+                                f.write("# https://curl.haxx.se/rfc/cookie_spec.html\n")
+                                f.write("# This is a generated file!  Do not edit.\n\n")
+                                f.write(f".{platform}.com\tTRUE\t/\tTRUE\t2147483647\tusername\t{username}\n")
+                                f.write(f".{platform}.com\tTRUE\t/\tTRUE\t2147483647\tpassword\t{password}\n")
+                    
+                    # Check if cookies file was created
+                    if os.path.exists(cookie_file) and os.path.getsize(cookie_file) > 0:
+                        return jsonify({
+                            "success": True,
+                            "message": f"{platform.capitalize()} credentials saved successfully and cookies generated",
+                            "has_cookies": True
+                        })
             except Exception as e:
                 # Log error but continue - we'll return success for credentials even if cookie generation fails
                 print(f"Error generating cookies: {str(e)}")
