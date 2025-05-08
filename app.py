@@ -63,16 +63,6 @@ def download_with_ytdlp(url):
         # Ensure cookie directory exists
         os.makedirs(COOKIE_DIR, exist_ok=True)
         
-        # Set up cookies based on platform
-        if platform == "YouTube":
-            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        else:  # Instagram
-            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        
         # Add extra parameters to help avoid bot detection
         extra_params = [
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
@@ -80,6 +70,24 @@ def download_with_ytdlp(url):
             '--no-check-certificates',
             '--extractor-retries', '3'
         ]
+        
+        # Add specific parameters for Instagram to bypass login
+        if platform == "Instagram":
+            extra_params.extend([
+                '--no-check-certificate',
+                '--ignore-errors',
+                '--no-warnings',
+                '--no-progress',
+                '--extract-audio',
+                '--add-header', 'User-Agent:Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)'
+            ])
+            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        else:  # YouTube
+            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
         
         try:
             # Get video info first
@@ -121,7 +129,55 @@ def download_with_ytdlp(url):
         except subprocess.CalledProcessError as e:
             error_output = e.stderr if e.stderr else str(e)
             
-            # Provide more specific and helpful error messages
+            # For Instagram, try an alternative method if login is required
+            if platform == "Instagram" and ("login required" in error_output or "Requested content is not available" in error_output):
+                try:
+                    # Try alternative approach with different parameters
+                    alt_params = [
+                        '--no-check-certificate',
+                        '--ignore-errors',
+                        '--no-warnings',
+                        '--force-generic-extractor',
+                        '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 12_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 105.0.0.11.118'
+                    ]
+                    
+                    # Download with alternative parameters
+                    alt_cmd = [ytdlp_path, '-o', output_template] + alt_params + [url]
+                    subprocess.run(alt_cmd, capture_output=True, text=True, check=True)
+                    
+                    # Find the downloaded file
+                    video_path = None
+                    for file in os.listdir(temp_dir):
+                        if file.endswith(('.mp4', '.mov', '.webm', '.mkv')):
+                            video_path = os.path.join(temp_dir, file)
+                            break
+                    
+                    if not video_path:
+                        return jsonify({"error": "Failed to download Instagram video"}), 500
+                    
+                    # Get video size
+                    video_size = os.path.getsize(video_path)
+                    
+                    return jsonify({
+                        "success": True,
+                        "video_info": {
+                            "filename": os.path.basename(video_path),
+                            "size_bytes": video_size,
+                            "size_mb": round(video_size / (1024 * 1024), 2),
+                            "local_path": video_path,
+                            "platform": "Instagram",
+                            "title": os.path.basename(video_path).split('.')[0]
+                        }
+                    })
+                    
+                except Exception as alt_err:
+                    return jsonify({
+                        "error": "Instagram login required and alternative method failed",
+                        "details": str(alt_err),
+                        "solution": "Try uploading Instagram cookies from a logged-in browser session"
+                    }), 403
+            
+            # Provide more specific and helpful error messages for other cases
             if "Sign in to confirm you're not a bot" in error_output:
                 return jsonify({
                     "error": "YouTube requires authentication to verify you're not a bot",
@@ -164,16 +220,6 @@ def get_info():
         cookie_params = []
         platform = "Instagram" if "instagram" in url.lower() else "YouTube"
         
-        # Set up cookies based on platform
-        if platform == "YouTube":
-            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        else:  # Instagram
-            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        
         # Add extra parameters to help avoid bot detection
         extra_params = [
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
@@ -181,6 +227,23 @@ def get_info():
             '--no-check-certificates',
             '--extractor-retries', '3'
         ]
+        
+        # Add specific parameters for Instagram to bypass login
+        if platform == "Instagram":
+            extra_params.extend([
+                '--no-check-certificate',
+                '--ignore-errors',
+                '--no-warnings',
+                '--no-progress',
+                '--add-header', 'User-Agent:Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)'
+            ])
+            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
+        else:  # YouTube
+            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
+            if os.path.exists(cookie_path):
+                cookie_params = ['--cookies', cookie_path]
             
         # Get video info
         info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
@@ -204,7 +267,45 @@ def get_info():
     except subprocess.CalledProcessError as e:
         error_output = e.stderr if e.stderr else str(e)
         
-        # Provide more specific and helpful error messages
+        # For Instagram, try an alternative method if login is required
+        if platform == "Instagram" and ("login required" in error_output or "Requested content is not available" in error_output):
+            try:
+                # Try alternative approach with different parameters
+                alt_params = [
+                    '--no-check-certificate',
+                    '--ignore-errors',
+                    '--no-warnings',
+                    '--force-generic-extractor',
+                    '--add-header', 'User-Agent:Mozilla/5.0 (iPhone; CPU iPhone OS 12_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 105.0.0.11.118'
+                ]
+                
+                # Get info with alternative parameters
+                alt_cmd = [ytdlp_path, '--dump-json'] + alt_params + [url]
+                result = subprocess.run(alt_cmd, capture_output=True, text=True, check=True)
+                video_info = json.loads(result.stdout)
+                
+                return jsonify({
+                    "success": True,
+                    "video_info": {
+                        "title": video_info.get('title', 'Unknown'),
+                        "uploader": video_info.get('uploader', 'Unknown'),
+                        "duration": video_info.get('duration', 0),
+                        "view_count": video_info.get('view_count', 0),
+                        "like_count": video_info.get('like_count', 0),
+                        "upload_date": video_info.get('upload_date', ''),
+                        "description": video_info.get('description', ''),
+                        "platform": "Instagram"
+                    }
+                })
+                
+            except Exception as alt_err:
+                return jsonify({
+                    "error": "Instagram login required and alternative method failed",
+                    "details": str(alt_err),
+                    "solution": "Try uploading Instagram cookies from a logged-in browser session"
+                }), 403
+        
+        # Provide more specific and helpful error messages for other cases
         if "Sign in to confirm you're not a bot" in error_output:
             return jsonify({
                 "error": "YouTube requires authentication to verify you're not a bot",
