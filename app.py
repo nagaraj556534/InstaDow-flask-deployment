@@ -37,9 +37,9 @@ def download_video():
     
     url = data['url']
     
-    # Validate URL
-    if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be)/.*', url):
-        return jsonify({"error": "Invalid URL. This tool supports Instagram and YouTube only."}), 400
+    # Validate URL - Updated to include all supported platforms
+    if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|tiktok\.com|twitter\.com|x\.com)/.*', url):
+        return jsonify({"error": "Invalid URL. This tool supports Instagram, YouTube, Facebook, TikTok, and Twitter only."}), 400
     
     return download_with_ytdlp(url)
 
@@ -58,20 +58,28 @@ def download_with_ytdlp(url):
             
         # Determine platform and set up cookie parameters
         cookie_params = []
-        platform = "Instagram" if "instagram" in url.lower() else "YouTube"
+        
+        # Detect platform from URL
+        if "instagram" in url.lower():
+            platform = "Instagram"
+        elif "youtube" in url.lower() or "youtu.be" in url.lower():
+            platform = "YouTube"
+        elif "facebook" in url.lower() or "fb.watch" in url.lower():
+            platform = "Facebook"
+        elif "tiktok" in url.lower():
+            platform = "TikTok"
+        elif "twitter" in url.lower() or "x.com" in url.lower():
+            platform = "Twitter"
+        else:
+            platform = "Unknown"
         
         # Ensure cookie directory exists
         os.makedirs(COOKIE_DIR, exist_ok=True)
         
         # Set up cookies based on platform
-        if platform == "YouTube":
-            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        else:  # Instagram
-            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
+        cookie_path = os.path.join(COOKIE_DIR, f"{platform.lower()}_cookies.txt")
+        if os.path.exists(cookie_path):
+            cookie_params = ['--cookies', cookie_path]
         
         # Add extra parameters to help avoid bot detection
         extra_params = [
@@ -125,15 +133,15 @@ def download_with_ytdlp(url):
             # Provide more specific and helpful error messages
             if "Sign in to confirm you're not a bot" in error_output:
                 return jsonify({
-                    "error": "YouTube requires authentication to verify you're not a bot",
-                    "solution": "Upload YouTube cookies from a logged-in browser session",
-                    "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
+                    "error": f"{platform} requires authentication to verify you're not a bot",
+                    "solution": f"Upload {platform} cookies from a logged-in browser session",
+                    "has_cookies": os.path.exists(cookie_path)
                 }), 403
             elif "login required" in error_output or "Requested content is not available" in error_output:
                 return jsonify({
-                    "error": "Instagram login required",
-                    "solution": "Upload Instagram cookies from a logged-in browser session",
-                    "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+                    "error": f"{platform} login required",
+                    "solution": f"Upload {platform} cookies from a logged-in browser session",
+                    "has_cookies": os.path.exists(cookie_path)
                 }), 403
             else:
                 return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
@@ -150,9 +158,9 @@ def get_info():
     
     url = data['url']
     
-    # Validate URL
-    if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be)/.*', url):
-        return jsonify({"error": "Invalid URL. This tool supports Instagram and YouTube only."}), 400
+    # Validate URL - Updated to include all supported platforms
+    if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|tiktok\.com|twitter\.com|x\.com)/.*', url):
+        return jsonify({"error": "Invalid URL. This tool supports Instagram, YouTube, Facebook, TikTok, and Twitter only."}), 400
     
     try:
         # Find yt-dlp executable path
@@ -163,17 +171,25 @@ def get_info():
         
         # Determine platform and set up cookie parameters
         cookie_params = []
-        platform = "Instagram" if "instagram" in url.lower() else "YouTube"
+        
+        # Detect platform from URL
+        if "instagram" in url.lower():
+            platform = "Instagram"
+        elif "youtube" in url.lower() or "youtu.be" in url.lower():
+            platform = "YouTube"
+        elif "facebook" in url.lower() or "fb.watch" in url.lower():
+            platform = "Facebook"
+        elif "tiktok" in url.lower():
+            platform = "TikTok"
+        elif "twitter" in url.lower() or "x.com" in url.lower():
+            platform = "Twitter"
+        else:
+            platform = "Unknown"
         
         # Set up cookies based on platform
-        if platform == "YouTube":
-            cookie_path = os.path.join(COOKIE_DIR, "youtube_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
-        else:  # Instagram
-            cookie_path = os.path.join(COOKIE_DIR, "instagram_cookies.txt")
-            if os.path.exists(cookie_path):
-                cookie_params = ['--cookies', cookie_path]
+        cookie_path = os.path.join(COOKIE_DIR, f"{platform.lower()}_cookies.txt")
+        if os.path.exists(cookie_path):
+            cookie_params = ['--cookies', cookie_path]
         
         # Add extra parameters to help avoid bot detection
         extra_params = [
@@ -209,15 +225,15 @@ def get_info():
         # Provide more specific and helpful error messages
         if "Sign in to confirm you're not a bot" in error_output:
             return jsonify({
-                "error": "YouTube requires authentication to verify you're not a bot",
-                "solution": "Upload YouTube cookies from a logged-in browser session",
-                "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
+                "error": f"{platform} requires authentication to verify you're not a bot",
+                "solution": f"Upload {platform} cookies from a logged-in browser session",
+                "has_cookies": os.path.exists(cookie_path)
             }), 403
         elif "login required" in error_output or "Requested content is not available" in error_output:
             return jsonify({
-                "error": "Instagram login required",
-                "solution": "Upload Instagram cookies from a logged-in browser session",
-                "has_cookies": os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+                "error": f"{platform} login required",
+                "solution": f"Upload {platform} cookies from a logged-in browser session",
+                "has_cookies": os.path.exists(cookie_path)
             }), 403
         else:
             return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
@@ -236,8 +252,8 @@ def upload_cookies():
         return jsonify({"error": "No file selected"}), 400
         
     platform = request.form.get('platform', '').lower()
-    if platform not in ['youtube', 'instagram']:
-        return jsonify({"error": "Invalid platform. Must be 'youtube' or 'instagram'"}), 400
+    if platform not in ['youtube', 'instagram', 'facebook', 'tiktok', 'twitter']:
+        return jsonify({"error": "Invalid platform. Must be 'youtube', 'instagram', 'facebook', 'tiktok', or 'twitter'"}), 400
     
     try:
         # Ensure cookie directory exists
@@ -273,19 +289,19 @@ def test_ytdlp():
         result = subprocess.run(version_cmd, capture_output=True, text=True, check=True)
         version = result.stdout.strip()
         
-        # Check if cookie files exist
-        youtube_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "youtube_cookies.txt"))
-        instagram_cookies_exist = os.path.exists(os.path.join(COOKIE_DIR, "instagram_cookies.txt"))
+        # Check if cookie files exist for all platforms
+        platforms = ['youtube', 'instagram', 'facebook', 'tiktok', 'twitter']
+        cookies_status = {}
+        
+        for platform in platforms:
+            cookies_status[platform] = os.path.exists(os.path.join(COOKIE_DIR, f"{platform}_cookies.txt"))
         
         return jsonify({
             "success": True,
             "yt_dlp_version": version,
             "yt_dlp_path": ytdlp_path,
             "python_version": sys.version,
-            "cookies": {
-                "youtube": youtube_cookies_exist,
-                "instagram": instagram_cookies_exist
-            }
+            "cookies": cookies_status
         })
     
     except Exception as e:
@@ -294,6 +310,28 @@ def test_ytdlp():
             "error": f"Error testing yt-dlp: {str(e)}",
             "python_version": sys.version
         }), 500
+
+@app.route('/api/supported-platforms', methods=['GET'])
+def supported_platforms():
+    """Return a list of supported platforms and their status"""
+    platforms = [
+        {"name": "YouTube", "id": "youtube", "url_pattern": "youtube.com or youtu.be"},
+        {"name": "Instagram", "id": "instagram", "url_pattern": "instagram.com"},
+        {"name": "Facebook", "id": "facebook", "url_pattern": "facebook.com or fb.watch"},
+        {"name": "TikTok", "id": "tiktok", "url_pattern": "tiktok.com"},
+        {"name": "Twitter (X)", "id": "twitter", "url_pattern": "twitter.com or x.com"}
+    ]
+    
+    # Check if cookie files exist for each platform
+    for platform in platforms:
+        platform_id = platform["id"]
+        cookie_path = os.path.join(COOKIE_DIR, f"{platform_id}_cookies.txt")
+        platform["has_cookies"] = os.path.exists(cookie_path)
+    
+    return jsonify({
+        "success": True,
+        "platforms": platforms
+    })
 
 def find_ytdlp_path():
     """Find the path to yt-dlp executable"""
@@ -354,5 +392,5 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Error checking yt-dlp version: {e}")
     
-    print("Starting the Video Downloader web application...")
+    print("Starting the Social Media Video Downloader web application...")
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 
