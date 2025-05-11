@@ -6,6 +6,7 @@ import subprocess
 import json
 import sys
 import uuid
+import time
 
 app = Flask(__name__)
 
@@ -81,20 +82,40 @@ def download_with_ytdlp(url):
         if os.path.exists(cookie_path):
             cookie_params = ['--cookies', cookie_path]
         
-        # Add extra parameters to help avoid bot detection
+        # Add extra parameters to help avoid bot detection and rate limiting
         extra_params = [
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
             '--no-check-certificates',
-            '--extractor-retries', '3'
+            '--extractor-retries', '5',
+            '--socket-timeout', '30',
+            '--sleep-interval', '5',
+            '--max-sleep-interval', '10',
+            '--sleep-subtitles', '3'
         ]
         
+        # Add proxy if available
+        proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
+        if os.path.exists(proxy_file):
+            with open(proxy_file, 'r') as f:
+                proxy_url = f.read().strip()
+                if proxy_url:
+                    extra_params.extend(['--proxy', proxy_url])
+        
         try:
+            # Add a delay before making requests to YouTube to avoid rate limiting
+            if platform == "YouTube":
+                time.sleep(2)  # Wait 2 seconds before making YouTube requests
+                
             # Get video info first
             info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
             result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
             video_info = json.loads(result.stdout)
             
+            # Add another small delay before downloading
+            if platform == "YouTube":
+                time.sleep(1)
+                
             # Download the video
             download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
             subprocess.run(download_cmd, capture_output=True, check=True)
@@ -131,10 +152,10 @@ def download_with_ytdlp(url):
             error_output = e.stderr if e.stderr else str(e)
             
             # Provide more specific and helpful error messages
-            if "Sign in to confirm you're not a bot" in error_output:
+            if "Sign in to confirm you're not a bot" in error_output or "Too Many Requests" in error_output:
                 return jsonify({
-                    "error": f"{platform} requires authentication to verify you're not a bot",
-                    "solution": f"Upload {platform} cookies from a logged-in browser session",
+                    "error": f"{platform} requires authentication to verify you're not a bot or is rate limiting requests",
+                    "solution": f"1. Upload {platform} cookies from a logged-in browser session\n2. Wait a few minutes before trying again\n3. Try using a VPN or proxy",
                     "has_cookies": os.path.exists(cookie_path)
                 }), 403
             elif "login required" in error_output or "Requested content is not available" in error_output:
@@ -332,6 +353,34 @@ def supported_platforms():
         "success": True,
         "platforms": platforms
     })
+
+@app.route('/api/upload-proxy', methods=['POST'])
+def upload_proxy():
+    """Endpoint to upload proxy configuration"""
+    data = request.json
+    
+    if not data or 'proxy_url' not in data:
+        return jsonify({"error": "No proxy URL provided"}), 400
+    
+    proxy_url = data['proxy_url']
+    if not proxy_url:
+        return jsonify({"error": "Empty proxy URL"}), 400
+    
+    try:
+        # Ensure cookie directory exists
+        os.makedirs(COOKIE_DIR, exist_ok=True)
+        
+        # Save the proxy URL to a file
+        proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
+        with open(proxy_file, 'w') as f:
+            f.write(proxy_url)
+        
+        return jsonify({
+            "success": True,
+            "message": "Proxy configuration saved successfully"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to save proxy configuration: {str(e)}"}), 500
 
 def find_ytdlp_path():
     """Find the path to yt-dlp executable"""
