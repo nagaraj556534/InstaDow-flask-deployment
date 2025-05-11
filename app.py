@@ -9,6 +9,8 @@ import uuid
 import time
 import random
 from functools import wraps
+import signal
+from contextlib import contextmanager
 
 app = Flask(__name__)
 
@@ -101,6 +103,21 @@ def download_video():
     
     return download_with_ytdlp(url)
 
+# Timeout handler for subprocess calls
+class TimeoutError(Exception):
+    pass
+
+@contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutError("Timed out")
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+
 def download_with_ytdlp(url):
     """Download video using yt-dlp with cookie support and exponential backoff"""
     try:
@@ -150,12 +167,25 @@ def download_with_ytdlp(url):
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
             '--no-check-certificates',
-            '--extractor-retries', '5',
-            '--socket-timeout', '30',
-            '--sleep-interval', '5',
-            '--max-sleep-interval', '10',
-            '--sleep-subtitles', '3'
+            '--extractor-retries', '3',
+            '--socket-timeout', '15',
+            '--sleep-interval', '2',
+            '--max-sleep-interval', '5',
+            '--sleep-subtitles', '1',
+            '--retries', '3',
+            '--fragment-retries', '3',
+            '--file-access-retries', '3',
+            '--concurrent-fragments', '1'
         ]
+        
+        # For YouTube, use format selection to speed up downloads
+        if platform == "YouTube":
+            # Prefer lower quality to avoid timeouts
+            extra_params.extend([
+                '-f', 'best[height<=480]/best',
+                '--no-playlist',
+                '--no-check-formats'
+            ])
         
         # Add proxy if available
         proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
@@ -166,7 +196,7 @@ def download_with_ytdlp(url):
                     extra_params.extend(['--proxy', proxy_url])
         
         # Implement exponential backoff for YouTube
-        max_retries = 5
+        max_retries = 3  # Reduced from 5 to 3
         retry_count = 0
         video_info = None
         
@@ -174,26 +204,54 @@ def download_with_ytdlp(url):
             try:
                 # Add a delay before making requests to YouTube to avoid rate limiting
                 if platform == "YouTube":
-                    # Exponential backoff: 2^retry_count seconds (1, 2, 4, 8, 16)
-                    backoff_time = 2 ** retry_count if retry_count > 0 else 2
+                    # Shorter backoff times: 1, 2, 4 seconds
+                    backoff_time = (2 ** retry_count) / 2 if retry_count > 0 else 1
                     time.sleep(backoff_time)
                     
-                # Get video info first
+                # Get video info first with a timeout
                 info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
-                result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
-                video_info = json.loads(result.stdout)
+                
+                try:
+                    # Use timeout to prevent hanging
+                    process = subprocess.Popen(
+                        info_cmd, 
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    # Wait for process with timeout (20 seconds)
+                    stdout, stderr = process.communicate(timeout=20)
+                    
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            process.returncode, 
+                            info_cmd, 
+                            output=stdout, 
+                            stderr=stderr
+                        )
+                    
+                    video_info = json.loads(stdout)
+                    
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    raise TimeoutError("yt-dlp process timed out")
                 
                 # Success! Break out of retry loop
                 break
                 
-            except subprocess.CalledProcessError as e:
-                error_output = e.stderr if e.stderr else str(e)
+            except (subprocess.CalledProcessError, TimeoutError) as e:
+                error_output = ""
+                if isinstance(e, subprocess.CalledProcessError):
+                    error_output = e.stderr if hasattr(e, 'stderr') else str(e)
+                else:
+                    error_output = "Process timed out"
                 
                 # If it's a rate limiting error and we haven't reached max retries
                 if ("Too Many Requests" in error_output or "429" in error_output) and retry_count < max_retries - 1:
                     retry_count += 1
                     # Log the retry attempt
-                    print(f"Rate limited by YouTube. Retry {retry_count}/{max_retries} after {2**retry_count} seconds")
+                    print(f"Rate limited by YouTube. Retry {retry_count}/{max_retries} after {(2**retry_count)/2} seconds")
                     continue
                 else:
                     # Either not a rate limit error or we've reached max retries
@@ -210,6 +268,11 @@ def download_with_ytdlp(url):
                             "solution": f"Upload {platform} cookies from a logged-in browser session",
                             "has_cookies": os.path.exists(cookie_path)
                         }), 403
+                    elif "timed out" in error_output.lower():
+                        return jsonify({
+                            "error": f"The request to {platform} timed out",
+                            "solution": "Try again later when the service is less busy"
+                        }), 504
                     else:
                         return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
         
@@ -220,32 +283,90 @@ def download_with_ytdlp(url):
                 "solution": "Please try again later or use a different URL"
             }), 429
         
+        # For YouTube videos, we'll return just the info without downloading to avoid timeouts
+        if platform == "YouTube":
+            # Prepare response with just the video info and direct URL if available
+            video_url = None
+            if 'url' in video_info:
+                video_url = video_info['url']
+            elif 'formats' in video_info and len(video_info['formats']) > 0:
+                # Find a medium quality format
+                formats = sorted(video_info['formats'], 
+                                key=lambda x: x.get('height', 0) if x.get('height', 0) <= 720 else 0, 
+                                reverse=True)
+                if formats:
+                    video_url = formats[0].get('url')
+            
+            if not video_url:
+                return jsonify({
+                    "error": "Could not extract direct video URL",
+                    "solution": "Try downloading with cookies or a proxy"
+                }), 500
+            
+            response = {
+                "success": True,
+                "video_info": {
+                    "filename": f"{video_info.get('title', 'video')}.mp4",
+                    "direct_url": video_url,
+                    "size_mb": "unknown",  # We don't download so size is unknown
+                    "caption": video_info.get('description', ''),
+                    "owner": video_info.get('uploader', ''),
+                    "platform": platform,
+                    "title": video_info.get('title', '')
+                }
+            }
+            
+            # Cache the successful result
+            cache.set(cache_key, response)
+            
+            return jsonify(response)
+        
+        # For non-YouTube platforms, continue with download
         # Reset retry counter for download
         retry_count = 0
         
         while retry_count < max_retries:
             try:
-                # Add another small delay before downloading
-                if platform == "YouTube":
-                    # Exponential backoff for download too
-                    backoff_time = 2 ** retry_count if retry_count > 0 else 1
-                    time.sleep(backoff_time)
-                    
-                # Download the video
+                # Download the video with timeout
                 download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
-                subprocess.run(download_cmd, capture_output=True, check=True)
+                
+                try:
+                    # Use timeout to prevent hanging
+                    process = subprocess.Popen(
+                        download_cmd, 
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    # Wait for process with timeout (45 seconds)
+                    stdout, stderr = process.communicate(timeout=45)
+                    
+                    if process.returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            process.returncode, 
+                            download_cmd, 
+                            output=stdout, 
+                            stderr=stderr
+                        )
+                    
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    raise TimeoutError("yt-dlp download process timed out")
                 
                 # Success! Break out of retry loop
                 break
                 
-            except subprocess.CalledProcessError as e:
-                error_output = e.stderr if e.stderr else str(e)
+            except (subprocess.CalledProcessError, TimeoutError) as e:
+                error_output = ""
+                if isinstance(e, subprocess.CalledProcessError):
+                    error_output = e.stderr if hasattr(e, 'stderr') else str(e)
+                else:
+                    error_output = "Process timed out"
                 
                 # If it's a rate limiting error and we haven't reached max retries
                 if ("Too Many Requests" in error_output or "429" in error_output) and retry_count < max_retries - 1:
                     retry_count += 1
-                    # Log the retry attempt
-                    print(f"Rate limited by YouTube during download. Retry {retry_count}/{max_retries} after {2**retry_count} seconds")
                     continue
                 else:
                     # Either not a rate limit error or we've reached max retries
@@ -616,5 +737,13 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Error checking yt-dlp version: {e}")
     
+    # Check if we're running in a production environment (like Render)
+    is_production = os.environ.get('RENDER', False) or os.environ.get('PRODUCTION', False)
+    
     print("Starting the Social Media Video Downloader web application...")
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 
+    if is_production:
+        # In production, let the WSGI server handle the app
+        print("Running in production mode")
+    else:
+        # In development, use Flask's built-in server
+        app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000))) 
