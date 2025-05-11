@@ -7,11 +7,68 @@ import json
 import sys
 import uuid
 import time
+import random
+from functools import wraps
 
 app = Flask(__name__)
 
 # Constants
 COOKIE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies')
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+
+# Simple cache implementation
+class SimpleCache:
+    def __init__(self, cache_dir, expiry_time=3600):
+        self.cache_dir = cache_dir
+        self.expiry_time = expiry_time
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def get(self, key):
+        cache_file = os.path.join(self.cache_dir, f"{key}.json")
+        if os.path.exists(cache_file):
+            # Check if cache is expired
+            if time.time() - os.path.getmtime(cache_file) < self.expiry_time:
+                try:
+                    with open(cache_file, 'r') as f:
+                        return json.load(f)
+                except:
+                    return None
+        return None
+    
+    def set(self, key, value):
+        cache_file = os.path.join(self.cache_dir, f"{key}.json")
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(value, f)
+            return True
+        except:
+            return False
+
+# Initialize cache
+cache = SimpleCache(CACHE_DIR)
+
+# Cache decorator
+def cached(expiry=3600):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Create a cache key based on function name and arguments
+            key = f"{func.__name__}_{hash(str(args) + str(kwargs))}"
+            
+            # Try to get from cache
+            cached_result = cache.get(key)
+            if cached_result:
+                return cached_result
+            
+            # If not in cache, call the function
+            result = func(*args, **kwargs)
+            
+            # Store in cache
+            cache.set(key, result)
+            
+            return result
+        return wrapper
+    return decorator
 
 @app.route('/')
 def home_page():
@@ -45,8 +102,14 @@ def download_video():
     return download_with_ytdlp(url)
 
 def download_with_ytdlp(url):
-    """Download video using yt-dlp with cookie support"""
+    """Download video using yt-dlp with cookie support and exponential backoff"""
     try:
+        # Check if we have a cached result for this URL
+        cache_key = f"download_{hash(url)}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return jsonify(cached_result)
+            
         # Create temporary directory with unique name
         temp_dir = tempfile.mkdtemp(prefix='ytdlp_')
         output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
@@ -102,75 +165,130 @@ def download_with_ytdlp(url):
                 if proxy_url:
                     extra_params.extend(['--proxy', proxy_url])
         
-        try:
-            # Add a delay before making requests to YouTube to avoid rate limiting
-            if platform == "YouTube":
-                time.sleep(2)  # Wait 2 seconds before making YouTube requests
+        # Implement exponential backoff for YouTube
+        max_retries = 5
+        retry_count = 0
+        video_info = None
+        
+        while retry_count < max_retries:
+            try:
+                # Add a delay before making requests to YouTube to avoid rate limiting
+                if platform == "YouTube":
+                    # Exponential backoff: 2^retry_count seconds (1, 2, 4, 8, 16)
+                    backoff_time = 2 ** retry_count if retry_count > 0 else 2
+                    time.sleep(backoff_time)
+                    
+                # Get video info first
+                info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
+                result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
+                video_info = json.loads(result.stdout)
                 
-            # Get video info first
-            info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
-            result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
-            video_info = json.loads(result.stdout)
-            
-            # Add another small delay before downloading
-            if platform == "YouTube":
-                time.sleep(1)
+                # Success! Break out of retry loop
+                break
                 
-            # Download the video
-            download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
-            subprocess.run(download_cmd, capture_output=True, check=True)
-            
-            # Find the downloaded file
-            video_path = None
-            for file in os.listdir(temp_dir):
-                if file.endswith(('.mp4', '.mov', '.webm', '.mkv')):
-                    video_path = os.path.join(temp_dir, file)
-                    break
-            
-            if not video_path:
-                return jsonify({"error": "Failed to download video with yt-dlp"}), 500
-            
-            # Get video size
-            video_size = os.path.getsize(video_path)
-            
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr if e.stderr else str(e)
+                
+                # If it's a rate limiting error and we haven't reached max retries
+                if ("Too Many Requests" in error_output or "429" in error_output) and retry_count < max_retries - 1:
+                    retry_count += 1
+                    # Log the retry attempt
+                    print(f"Rate limited by YouTube. Retry {retry_count}/{max_retries} after {2**retry_count} seconds")
+                    continue
+                else:
+                    # Either not a rate limit error or we've reached max retries
+                    if "Sign in to confirm you're not a bot" in error_output or "Too Many Requests" in error_output:
+                        return jsonify({
+                            "error": f"{platform} requires authentication to verify you're not a bot or is rate limiting requests",
+                            "solution": f"1. Upload {platform} cookies from a logged-in browser session\n2. Wait a few minutes before trying again\n3. Try using a VPN or proxy",
+                            "has_cookies": os.path.exists(cookie_path),
+                            "retry_after": 60  # Suggest waiting 1 minute
+                        }), 429
+                    elif "login required" in error_output or "Requested content is not available" in error_output:
+                        return jsonify({
+                            "error": f"{platform} login required",
+                            "solution": f"Upload {platform} cookies from a logged-in browser session",
+                            "has_cookies": os.path.exists(cookie_path)
+                        }), 403
+                    else:
+                        return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
+        
+        # If we couldn't get video info after all retries
+        if not video_info:
             return jsonify({
-                "success": True,
-                "video_info": {
-                    "filename": os.path.basename(video_path),
-                    "size_bytes": video_size,
-                    "size_mb": round(video_size / (1024 * 1024), 2),
-                    "local_path": video_path,
-                    "caption": video_info.get('description', ''),
-                    "owner": video_info.get('uploader', ''),
-                    "platform": platform,
-                    "title": video_info.get('title', '')
-                }
-            })
+                "error": f"Failed to get video info after {max_retries} attempts",
+                "solution": "Please try again later or use a different URL"
+            }), 429
+        
+        # Reset retry counter for download
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Add another small delay before downloading
+                if platform == "YouTube":
+                    # Exponential backoff for download too
+                    backoff_time = 2 ** retry_count if retry_count > 0 else 1
+                    time.sleep(backoff_time)
+                    
+                # Download the video
+                download_cmd = [ytdlp_path, '-o', output_template] + cookie_params + extra_params + [url]
+                subprocess.run(download_cmd, capture_output=True, check=True)
                 
-        except subprocess.CalledProcessError as e:
-            # Fix: e.stderr is already a string when text=True is used in subprocess.run
-            error_output = e.stderr if e.stderr else str(e)
-            
-            # Provide more specific and helpful error messages
-            if "Sign in to confirm you're not a bot" in error_output or "Too Many Requests" in error_output:
-                return jsonify({
-                    "error": f"{platform} requires authentication to verify you're not a bot or is rate limiting requests",
-                    "solution": f"1. Upload {platform} cookies from a logged-in browser session\n2. Wait a few minutes before trying again\n3. Try using a VPN or proxy",
-                    "has_cookies": os.path.exists(cookie_path)
-                }), 403
-            elif "login required" in error_output or "Requested content is not available" in error_output:
-                return jsonify({
-                    "error": f"{platform} login required",
-                    "solution": f"Upload {platform} cookies from a logged-in browser session",
-                    "has_cookies": os.path.exists(cookie_path)
-                }), 403
-            else:
-                return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
-    
+                # Success! Break out of retry loop
+                break
+                
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr if e.stderr else str(e)
+                
+                # If it's a rate limiting error and we haven't reached max retries
+                if ("Too Many Requests" in error_output or "429" in error_output) and retry_count < max_retries - 1:
+                    retry_count += 1
+                    # Log the retry attempt
+                    print(f"Rate limited by YouTube during download. Retry {retry_count}/{max_retries} after {2**retry_count} seconds")
+                    continue
+                else:
+                    # Either not a rate limit error or we've reached max retries
+                    return jsonify({"error": f"yt-dlp download error: {error_output}"}), 500
+        
+        # Find the downloaded file
+        video_path = None
+        for file in os.listdir(temp_dir):
+            if file.endswith(('.mp4', '.mov', '.webm', '.mkv')):
+                video_path = os.path.join(temp_dir, file)
+                break
+        
+        if not video_path:
+            return jsonify({"error": "Failed to download video with yt-dlp"}), 500
+        
+        # Get video size
+        video_size = os.path.getsize(video_path)
+        
+        # Prepare response
+        response = {
+            "success": True,
+            "video_info": {
+                "filename": os.path.basename(video_path),
+                "size_bytes": video_size,
+                "size_mb": round(video_size / (1024 * 1024), 2),
+                "local_path": video_path,
+                "caption": video_info.get('description', ''),
+                "owner": video_info.get('uploader', ''),
+                "platform": platform,
+                "title": video_info.get('title', '')
+            }
+        }
+        
+        # Cache the successful result
+        cache.set(cache_key, response)
+        
+        return jsonify(response)
+                
     except Exception as e:
         return jsonify({"error": f"Error using yt-dlp: {str(e)}"}), 500
 
 @app.route('/api/get-info', methods=['POST'])
+@cached(expiry=1800)  # Cache for 30 minutes
 def get_info():
     data = request.json
     
@@ -217,13 +335,67 @@ def get_info():
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
             '--add-header', 'Accept-Language:en-US,en;q=0.9',
             '--no-check-certificates',
-            '--extractor-retries', '3'
+            '--extractor-retries', '5',
+            '--socket-timeout', '30',
+            '--sleep-interval', '5',
+            '--max-sleep-interval', '10',
+            '--sleep-subtitles', '3'
         ]
-            
-        # Get video info
-        info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
-        result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
-        video_info = json.loads(result.stdout)
+        
+        # Add proxy if available
+        proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
+        if os.path.exists(proxy_file):
+            with open(proxy_file, 'r') as f:
+                proxy_url = f.read().strip()
+                if proxy_url:
+                    extra_params.extend(['--proxy', proxy_url])
+        
+        # Implement exponential backoff for YouTube
+        max_retries = 5
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Add a delay before making requests to YouTube to avoid rate limiting
+                if platform == "YouTube":
+                    # Exponential backoff: 2^retry_count seconds (1, 2, 4, 8, 16)
+                    backoff_time = 2 ** retry_count if retry_count > 0 else 2
+                    time.sleep(backoff_time)
+                
+                # Get video info
+                info_cmd = [ytdlp_path, '--dump-json'] + cookie_params + extra_params + [url]
+                result = subprocess.run(info_cmd, capture_output=True, text=True, check=True)
+                video_info = json.loads(result.stdout)
+                
+                # Success! Break out of retry loop
+                break
+                
+            except subprocess.CalledProcessError as e:
+                error_output = e.stderr if e.stderr else str(e)
+                
+                # If it's a rate limiting error and we haven't reached max retries
+                if ("Too Many Requests" in error_output or "429" in error_output) and retry_count < max_retries - 1:
+                    retry_count += 1
+                    # Log the retry attempt
+                    print(f"Rate limited by YouTube. Retry {retry_count}/{max_retries} after {2**retry_count} seconds")
+                    continue
+                else:
+                    # Either not a rate limit error or we've reached max retries
+                    if "Sign in to confirm you're not a bot" in error_output or "Too Many Requests" in error_output:
+                        return jsonify({
+                            "error": f"{platform} requires authentication to verify you're not a bot or is rate limiting requests",
+                            "solution": f"1. Upload {platform} cookies from a logged-in browser session\n2. Wait a few minutes before trying again\n3. Try using a VPN or proxy",
+                            "has_cookies": os.path.exists(cookie_path),
+                            "retry_after": 60  # Suggest waiting 1 minute
+                        }), 429
+                    elif "login required" in error_output or "Requested content is not available" in error_output:
+                        return jsonify({
+                            "error": f"{platform} login required",
+                            "solution": f"Upload {platform} cookies from a logged-in browser session",
+                            "has_cookies": os.path.exists(cookie_path)
+                        }), 403
+                    else:
+                        return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
         
         return jsonify({
             "success": True,
@@ -238,26 +410,6 @@ def get_info():
                 "platform": platform
             }
         })
-    
-    except subprocess.CalledProcessError as e:
-        # Fix: e.stderr is already a string when text=True is used in subprocess.run
-        error_output = e.stderr if e.stderr else str(e)
-        
-        # Provide more specific and helpful error messages
-        if "Sign in to confirm you're not a bot" in error_output:
-            return jsonify({
-                "error": f"{platform} requires authentication to verify you're not a bot",
-                "solution": f"Upload {platform} cookies from a logged-in browser session",
-                "has_cookies": os.path.exists(cookie_path)
-            }), 403
-        elif "login required" in error_output or "Requested content is not available" in error_output:
-            return jsonify({
-                "error": f"{platform} login required",
-                "solution": f"Upload {platform} cookies from a logged-in browser session",
-                "has_cookies": os.path.exists(cookie_path)
-            }), 403
-        else:
-            return jsonify({"error": f"yt-dlp error: {error_output}"}), 500
     
     except Exception as e:
         return jsonify({"error": f"Error using yt-dlp: {str(e)}"}), 500
@@ -291,6 +443,34 @@ def upload_cookies():
         })
     except Exception as e:
         return jsonify({"error": f"Failed to save cookie file: {str(e)}"}), 500
+
+@app.route('/api/upload-proxy', methods=['POST'])
+def upload_proxy():
+    """Endpoint to upload proxy configuration"""
+    data = request.json
+    
+    if not data or 'proxy_url' not in data:
+        return jsonify({"error": "No proxy URL provided"}), 400
+    
+    proxy_url = data['proxy_url']
+    if not proxy_url:
+        return jsonify({"error": "Empty proxy URL"}), 400
+    
+    try:
+        # Ensure cookie directory exists
+        os.makedirs(COOKIE_DIR, exist_ok=True)
+        
+        # Save the proxy URL to a file
+        proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
+        with open(proxy_file, 'w') as f:
+            f.write(proxy_url)
+        
+        return jsonify({
+            "success": True,
+            "message": "Proxy configuration saved successfully"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to save proxy configuration: {str(e)}"}), 500
 
 @app.route('/api/test-ytdlp', methods=['GET'])
 def test_ytdlp():
@@ -354,33 +534,25 @@ def supported_platforms():
         "platforms": platforms
     })
 
-@app.route('/api/upload-proxy', methods=['POST'])
-def upload_proxy():
-    """Endpoint to upload proxy configuration"""
-    data = request.json
-    
-    if not data or 'proxy_url' not in data:
-        return jsonify({"error": "No proxy URL provided"}), 400
-    
-    proxy_url = data['proxy_url']
-    if not proxy_url:
-        return jsonify({"error": "Empty proxy URL"}), 400
-    
+@app.route('/api/clear-cache', methods=['POST', 'GET'])
+def clear_cache():
+    """Clear the cache to force fresh downloads"""
     try:
-        # Ensure cookie directory exists
-        os.makedirs(COOKIE_DIR, exist_ok=True)
-        
-        # Save the proxy URL to a file
-        proxy_file = os.path.join(COOKIE_DIR, 'proxy.txt')
-        with open(proxy_file, 'w') as f:
-            f.write(proxy_url)
+        if os.path.exists(CACHE_DIR):
+            # Delete all files in cache directory
+            for file in os.listdir(CACHE_DIR):
+                file_path = os.path.join(CACHE_DIR, file)
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
         
         return jsonify({
             "success": True,
-            "message": "Proxy configuration saved successfully"
+            "message": "Cache cleared successfully"
         })
     except Exception as e:
-        return jsonify({"error": f"Failed to save proxy configuration: {str(e)}"}), 500
+        return jsonify({
+            "error": f"Failed to clear cache: {str(e)}"
+        }), 500
 
 def find_ytdlp_path():
     """Find the path to yt-dlp executable"""
@@ -427,6 +599,9 @@ if __name__ == '__main__':
     
     # Create cookies directory if it doesn't exist
     os.makedirs(COOKIE_DIR, exist_ok=True)
+    
+    # Create cache directory if it doesn't exist
+    os.makedirs(CACHE_DIR, exist_ok=True)
     
     # Check if yt-dlp is installed
     ytdlp_path = find_ytdlp_path()
