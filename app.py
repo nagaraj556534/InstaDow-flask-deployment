@@ -103,6 +103,119 @@ def download_video():
     
     return download_with_ytdlp(url)
 
+@app.route('/api/download-with-smd', methods=['POST'])
+def download_with_smd():
+    """Download video using Social-Media-Downloader instead of yt-dlp directly"""
+    try:
+        data = request.json
+        
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        url = data['url']
+        
+        # Validate URL - Same as our existing validation
+        if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|tiktok\.com|twitter\.com|x\.com)/.*', url):
+            return jsonify({"error": "Invalid URL. This tool supports Instagram, YouTube, Facebook, TikTok, and Twitter only."}), 400
+        
+        # Import SMD here to avoid affecting startup if it's not installed
+        try:
+            from smd.core.downloader_engine import Downloader
+            from smd.utils.url_utils import URLUtils
+        except ImportError:
+            return jsonify({
+                "error": "Social-Media-Downloader not installed",
+                "solution": "Run 'pip install social-media-downloader' to enable this feature"
+            }), 500
+        
+        # Create temporary directory for download
+        temp_dir = tempfile.mkdtemp(prefix='smd_')
+        
+        # Detect platform from URL
+        if "instagram" in url.lower():
+            platform = "Instagram"
+        elif "youtube" in url.lower() or "youtu.be" in url.lower():
+            platform = "YouTube"
+        elif "facebook" in url.lower() or "fb.watch" in url.lower():
+            platform = "Facebook"
+        elif "tiktok" in url.lower():
+            platform = "TikTok"
+        elif "twitter" in url.lower() or "x.com" in url.lower():
+            platform = "Twitter"
+        else:
+            platform = "Unknown"
+        
+        # Configure Social-Media-Downloader
+        config = {
+            "download_path": temp_dir,
+            "format": "best",  # Choose best quality
+            "quiet": True
+        }
+        
+        # Initialize downloader
+        downloader = Downloader(config)
+        
+        # Check cache first
+        cache_key = f"smd_download_{hash(url)}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return jsonify(cached_result)
+        
+        # Download the video
+        try:
+            url_utils = URLUtils()
+            platform_name = url_utils.detect_platform(url)
+            
+            if not platform_name:
+                return jsonify({"error": "Unsupported platform or invalid URL"}), 400
+            
+            print(f"Downloading video from {platform_name}...")
+            result = downloader.download_video(url)
+            
+            if not result or not result.get("success"):
+                return jsonify({
+                    "error": f"Failed to download video: {result.get('error', 'Unknown error')}",
+                    "solution": "Try using the regular downloader or update SMD"
+                }), 500
+            
+            # Get downloaded file path from result
+            file_path = result.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                return jsonify({"error": "Could not find downloaded file"}), 500
+            
+            # Get file size
+            file_size = os.path.getsize(file_path)
+            
+            # Prepare response
+            response = {
+                "success": True,
+                "video_info": {
+                    "filename": os.path.basename(file_path),
+                    "size_bytes": file_size,
+                    "size_mb": round(file_size / (1024 * 1024), 2),
+                    "local_path": file_path,
+                    "platform": platform,
+                    "title": result.get("title", os.path.basename(file_path))
+                }
+            }
+            
+            # Cache the successful result
+            cache.set(cache_key, response)
+            
+            return jsonify(response)
+            
+        except Exception as e:
+            # Log the specific exception
+            print(f"SMD download error: {str(e)}")
+            
+            return jsonify({
+                "error": f"Error using Social-Media-Downloader: {str(e)}",
+                "solution": "Try using the regular downloader or update SMD"
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": f"Error: {str(e)}"}), 500
+
 # Timeout handler for subprocess calls
 class TimeoutError(Exception):
     pass
