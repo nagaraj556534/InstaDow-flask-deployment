@@ -1,4 +1,5 @@
 Flask==2.3.3
 requests>=2.31.0
-yt-dlp==2025.04.30 
-gunicorn==21.2.0
+yt-dlp==2025.04.30
+social-media-downloader>=1.1.7
+gunicorn>=21.2.0 
