@@ -788,6 +788,138 @@ def clear_cache():
             "error": f"Failed to clear cache: {str(e)}"
         }), 500
 
+@app.route('/api/smart-download', methods=['POST'])
+def smart_download():
+    """Smart download that tries SMD first, then falls back to yt-dlp if needed"""
+    try:
+        data = request.json
+        
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        url = data['url']
+        
+        # Validate URL - Same as our existing validation
+        if not re.match(r'https?://(www\.)?(instagram\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|tiktok\.com|twitter\.com|x\.com)/.*', url):
+            return jsonify({"error": "Invalid URL. This tool supports Instagram, YouTube, Facebook, TikTok, and Twitter only."}), 400
+        
+        # Check if we have a cached result
+        cache_key = f"smart_download_{hash(url)}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            return jsonify(cached_result)
+        
+        # STEP 1: Try Social-Media-Downloader first
+        try:
+            # Import SMD
+            from smd.core.downloader_engine import Downloader
+            from smd.utils.url_utils import URLUtils
+            
+            # Create temporary directory for download
+            temp_dir = tempfile.mkdtemp(prefix='smd_')
+            
+            # Configure Social-Media-Downloader
+            config = {
+                "download_path": temp_dir,
+                "format": "best",  # Choose best quality
+                "quiet": True
+            }
+            
+            # Initialize downloader
+            downloader = Downloader(config)
+            
+            # Download the video
+            url_utils = URLUtils()
+            platform_name = url_utils.detect_platform(url)
+            
+            if not platform_name:
+                raise Exception("Unsupported platform or invalid URL")
+            
+            print(f"Trying SMD first: Downloading video from {platform_name}...")
+            result = downloader.download_video(url)
+            
+            if not result or not result.get("success"):
+                raise Exception(f"SMD download failed: {result.get('error', 'Unknown error')}")
+            
+            # Get downloaded file path from result
+            file_path = result.get("file_path")
+            if not file_path or not os.path.exists(file_path):
+                raise Exception("Could not find downloaded file")
+            
+            # Detect platform from URL
+            if "instagram" in url.lower():
+                platform = "Instagram"
+            elif "youtube" in url.lower() or "youtu.be" in url.lower():
+                platform = "YouTube"
+            elif "facebook" in url.lower() or "fb.watch" in url.lower():
+                platform = "Facebook"
+            elif "tiktok" in url.lower():
+                platform = "TikTok"
+            elif "twitter" in url.lower() or "x.com" in url.lower():
+                platform = "Twitter"
+            else:
+                platform = "Unknown"
+            
+            # Get file size
+            file_size = os.path.getsize(file_path)
+            
+            # Prepare response
+            response = {
+                "success": True,
+                "method": "smd",
+                "video_info": {
+                    "filename": os.path.basename(file_path),
+                    "size_bytes": file_size,
+                    "size_mb": round(file_size / (1024 * 1024), 2),
+                    "local_path": file_path,
+                    "platform": platform,
+                    "title": result.get("title", os.path.basename(file_path))
+                }
+            }
+            
+            # Cache the successful result
+            cache.set(cache_key, response)
+            
+            print("SMD download successful!")
+            return jsonify(response)
+            
+        except Exception as e:
+            # Log the SMD error
+            print(f"SMD download failed: {str(e)}")
+            print("Falling back to yt-dlp...")
+            
+            # STEP 2: Fall back to yt-dlp if SMD fails
+            try:
+                # Call our existing yt-dlp implementation
+                yt_dlp_response = download_with_ytdlp(url)
+                
+                # If it's a response object, extract the JSON
+                if hasattr(yt_dlp_response, 'json'):
+                    yt_dlp_data = yt_dlp_response.json
+                    if callable(yt_dlp_data):
+                        yt_dlp_data = yt_dlp_data()
+                else:
+                    yt_dlp_data = yt_dlp_response
+                
+                # Add method information
+                if isinstance(yt_dlp_data, dict) and yt_dlp_data.get('success'):
+                    yt_dlp_data['method'] = 'yt-dlp'
+                    
+                    # Cache the successful result
+                    cache.set(cache_key, yt_dlp_data)
+                
+                return jsonify(yt_dlp_data) if isinstance(yt_dlp_data, dict) else yt_dlp_response
+                
+            except Exception as yt_dlp_error:
+                # Both methods failed
+                return jsonify({
+                    "error": f"Both download methods failed. SMD error: {str(e)}. yt-dlp error: {str(yt_dlp_error)}",
+                    "solution": "Please try again later or use a different URL"
+                }), 500
+    
+    except Exception as e:
+        return jsonify({"error": f"Error: {str(e)}"}), 500
+
 def find_ytdlp_path():
     """Find the path to yt-dlp executable"""
     ytdlp_path = None
